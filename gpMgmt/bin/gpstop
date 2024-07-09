@@ -130,28 +130,58 @@ def print_progress(pool: base.WorkerPool, interval: int = 10) -> None:
 
 # ---------------------------------------------------------------
 class GpStop:
+    __slots__ = [
+        "__conn",
+        "__coordinator_datadir",
+        "__dburl",
+        "__etcd_hosts",
+        "__fts_hosts",
+        "__gparray",
+        "__gphome",
+        "__gpversion",
+        "__is_prepared",
+        "__pool",
+        "__port",
+        "coordinatoronly",
+        "gpversion",
+        "hadFailures",
+        "interactive",
+        "is_external_fts",
+        "logfileDirectory",
+        "mode",
+        "onlyThisHost",
+        "parallel",
+        "pid",
+        "quiet",
+        "restart",
+        "sighup",
+        "stopstandby",
+        "timeout",
+    ]
+
     ######
     def __init__(
         self,
-        mode,
-        coordinator_datadir=None,
-        parallel=DEFAULT_NUM_WORKERS,
-        quiet=False,
-        coordinatoronly=False,
-        sighup=False,
-        interactive=False,
-        stopstandby=False,
-        restart=False,
-        timeout=SEGMENT_STOP_TIMEOUT_DEFAULT,
-        logfileDirectory=False,
-        onlyThisHost=None,
-        fts_hosts=None,
-        etcd_hosts=None,
-        is_external_fts=False,
+        /,
+        mode: Literal["fast", "smart", "immediate"],
+        *,
+        parallel: int = DEFAULT_NUM_WORKERS,
+        quiet: bool = False,
+        coordinatoronly: bool = False,
+        sighup: bool = False,
+        interactive: bool = False,
+        stopstandby: bool = False,
+        restart: bool = False,
+        timeout: int = SEGMENT_STOP_TIMEOUT_DEFAULT,
+        logfileDirectory: bool = False,
+        onlyThisHost: str | None = None,
+        is_external_fts: bool = False,
+        coordinator_datadir: str | None = None,
+        fts_hosts: str | None = None,
+        etcd_hosts: str | None = None,
     ):
         self.mode = mode
-        self.coordinator_datadir = coordinator_datadir
-        self.pool = None
+
         self.parallel = parallel
         self.quiet = quiet
         self.pid = 0
@@ -163,20 +193,68 @@ class GpStop:
         self.hadFailures = False
         self.timeout = timeout
         self.logfileDirectory = logfileDirectory
-        self.onlyThisHost = onlyThisHost
-        self.fts_hosts = fts_hosts
-        self.etcd_hosts = etcd_hosts
+        self.onlyThisHost: str | None = onlyThisHost
+        # some variables can be assigned here, or in _prepare()
+
+        self.__fts_hosts = fts_hosts
+        self.__etcd_hosts = etcd_hosts
+        self.__coordinator_datadir = coordinator_datadir
         # some variables that will be assigned during run()
-        self.gphome = None
-        self.port = None
-        self.dburl = None
-        self.conn = None
-        self.gparray = None
-        self.gpversion = None
+        self.__pool = None
+        self.__gphome = None
+        self.__port: int | None = None
+        self.__dburl = None
+        self.__conn = None
+        self.__gparray: GpArray | None = None
+        self.__gpversion = None
         self.is_external_fts = is_external_fts
 
         logger.debug("Setting level of parallelism to: %d" % self.parallel)
-        pass
+
+    @property
+    def gphome(self) -> str:
+        assert self.__gphome is not None, "Must call _prepare() first"
+        return self.__gphome
+
+    @property
+    def gparray(self) -> GpArray:
+        assert self.__gparray is not None, "Must call _prepare() first"
+        return self.__gparray
+
+    @property
+    def gpversion(self) -> str:
+        assert self.__gpversion is not None, "Must call _prepare() first"
+        return self.__gpversion
+
+    @property
+    def port(self) -> int:
+        assert self.__port is not None, "Must call _prepare() first"
+        return self.__port
+
+    @property
+    def dburl(self) -> dbconn.DbURL:
+        assert self.__dburl is not None, "Must call _prepare() first"
+        return self.__dburl
+
+    @property
+    def conn(self) -> dbconn.Connection:
+        assert self.__conn is not None, "Must call _prepare() first"
+        return self.__conn
+
+    @property
+    def coordinator_datadir(self) -> str:
+        assert self.__coordinator_datadir is not None, "Must call _prepare() first"
+        return self.__coordinator_datadir
+
+    @property
+    def fts_hosts(self) -> str:
+        assert self.__fts_hosts is not None, "Must call _prepare() first"
+        return self.__fts_hosts
+
+    @property
+    def etcd_hosts(self) -> str:
+        assert self.__etcd_hosts is not None, "Must call _prepare() first"
+        return self.__etcd_hosts
 
     #####
     def _find_any_primary_and_mirror_on_same_host(self, segs):
