@@ -10,11 +10,12 @@ import os
 import pprint
 import signal
 import socket
+import subprocess
 import sys
 import time
+from collections.abc import Iterable
 from optparse import OptionGroup
-
-from .gppylib.mainUtils import parseStatusLine
+from typing import Literal
 
 try:
     from .gppylib import pgconf, userinput
@@ -26,9 +27,29 @@ try:
     )
     from .gppylib.db import catalog, dbconn
     from .gppylib.gp_era import GpEraFile
-    from .gppylib.gparray import Segment
-    from .gppylib.gplog import get_default_logger
+    from .gppylib.gparray import GpArray, Segment
+    from .gppylib.gplog import (
+        get_default_logger,
+        get_logfile,
+        get_logger_if_verbose,
+        logging_is_verbose,
+    )
     from .gppylib.gpparseopts import OptChecker, OptParser
+    from .gppylib.mainUtils import (
+        ExceptionNoStackTraceNeeded,
+        ProgramArgumentValidationException,
+        UserAbortedException,
+        addCoordinatorDirectoryOptionForSingleClusterProgram,
+        addStandardLoggingAndHelpOptions,
+        check_etcd,
+        check_fts,
+        is_external_fts,
+        kill_etcd,
+        kill_fts,
+        parseStatusLine,
+        read_hosts,
+        simple_main,
+    )
     from .gppylib.operations.detect_unreachable_hosts import (
         get_unreachable_segment_hosts,
     )
@@ -84,7 +105,7 @@ class SegStopStatus:
             )
 
 
-def print_progress(pool, interval=10):
+def print_progress(pool: base.WorkerPool, interval: int = 10) -> None:
     """
     Waits for a WorkerPool to complete, printing a progress percentage marker
     once at the beginning of the call, and thereafter at the provided interval
