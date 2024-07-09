@@ -14,28 +14,26 @@ import sys
 import time
 from optparse import OptionGroup
 
-from gppylib.mainUtils import *
-from gppylib.mainUtils import parseStatusLine
+from .gppylib.mainUtils import parseStatusLine
 
 try:
-    from gppylib import pgconf, userinput
-    from gppylib.commands import base, dca, gp, pg, unix
-    from gppylib.commands.gp import (
+    from .gppylib import pgconf, userinput
+    from .gppylib.commands import base, dca, gp, pg, unix
+    from .gppylib.commands.gp import (
         SEGMENT_STOP_TIMEOUT_DEFAULT,
         GpSegStopCmd,
         SegmentStop,
     )
-    from gppylib.db import catalog, dbconn
-    from gppylib.gp_era import GpEraFile
-    from gppylib.gparray import *
-    from gppylib.gplog import *
-    from gppylib.gpparseopts import OptChecker, OptParser
-    from gppylib.operations.detect_unreachable_hosts import (
+    from .gppylib.db import catalog, dbconn
+    from .gppylib.gp_era import GpEraFile
+    from .gppylib.gparray import Segment
+    from .gppylib.gplog import get_default_logger
+    from .gppylib.gpparseopts import OptChecker, OptParser
+    from .gppylib.operations.detect_unreachable_hosts import (
         get_unreachable_segment_hosts,
     )
-    from gppylib.operations.rebalanceSegments import ReconfigDetectionSQLQueryCommand
-    from gppylib.operations.utils import ParallelOperation, RemoteOperation
-    from gppylib.utils import TableLogger
+    from .gppylib.operations.rebalanceSegments import ReconfigDetectionSQLQueryCommand
+    from .gppylib.utils import TableLogger
 except ImportError as e:
     sys.exit(
         "ERROR: Cannot import modules.  Please check that you have sourced greenplum_path.sh.  Detail: "
@@ -56,7 +54,18 @@ PG_CTL_STATUS_SLEEP_INTERVAL = (
 class SegStopStatus:
     """Tracks result of trying to stop an individual segment database"""
 
-    def __init__(self, db, stopped=False, reason=None, failedCmd=None, timedOut=False):
+    __slots__ = ["db", "failedCmd", "reason", "stopped", "timedOut"]
+
+    def __init__(
+        self,
+        /,
+        db: Segment,
+        *,
+        stopped: bool = False,
+        reason: str | None = None,
+        failedCmd: str | None = None,
+        timedOut: bool = False,
+    ) -> None:
         self.db = db
         self.stopped = stopped
         self.reason = reason
