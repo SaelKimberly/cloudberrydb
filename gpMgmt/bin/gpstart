@@ -6,35 +6,61 @@
 # THIS IMPORT MUST COME FIRST
 #
 # import mainUtils FIRST to get python version check
+import os
+import signal
+import subprocess
 import sys
-from optparse import OptionGroup, SUPPRESS_HELP
-
-from gppylib.mainUtils import *
+import time
+from optparse import SUPPRESS_HELP, OptionGroup
+from typing import Literal
 
 try:
-    import pickle
-
-    from gppylib.db import dbconn
-    from gppylib.gpparseopts import OptParser, OptChecker
-    from gppylib.gparray import *
-    from gppylib.gplog import get_default_logger, log_to_file_only
-    from gppylib import userinput
-    from gppylib.db import catalog
-    from gppylib.commands import unix
-    from gppylib.commands import gp
-    from gppylib.commands.gp import SEGMENT_TIMEOUT_DEFAULT
-    from gppylib.commands import base
-    from gppylib.commands import pg
-    from gppylib.commands import dca
-    from gppylib import pgconf
-    from gppylib.heapchecksum import HeapChecksum
-    from gppylib.commands.pg import PgControlData
-    from gppylib.operations.startSegments import *
-    from gppylib.operations.detect_unreachable_hosts import get_unreachable_segment_hosts, mark_segments_down_for_unreachable_hosts
-    from gppylib.utils import TableLogger
-    from gppylib.gp_era import GpEraFile
+    from .gppylib import pgconf, userinput
+    from .gppylib.commands import base, dca, gp, pg, unix
+    from .gppylib.commands.gp import SEGMENT_TIMEOUT_DEFAULT
+    from .gppylib.commands.pg import PgControlData
+    from .gppylib.db import dbconn
+    from .gppylib.gp_era import GpEraFile
+    from .gppylib.gparray import GpArray, Segment
+    from .gppylib.gplog import (
+        get_default_logger,
+        get_logfile,
+        get_logger_if_verbose,
+        logging_is_quiet,
+        logging_is_verbose,
+    )
+    from .gppylib.gpparseopts import OptChecker, OptParser
+    from .gppylib.heapchecksum import HeapChecksum
+    from .gppylib.mainUtils import (
+        ExceptionNoStackTraceNeeded,
+        ProgramArgumentValidationException,
+        UserAbortedException,
+        addCoordinatorDirectoryOptionForSingleClusterProgram,
+        addStandardLoggingAndHelpOptions,
+        check_etcd,
+        check_fts,
+        is_external_fts,
+        read_hosts,
+        resolve_hostname,
+        simple_main,
+        start_etcd,
+        start_fts,
+    )
+    from .gppylib.operations.detect_unreachable_hosts import (
+        get_unreachable_segment_hosts,
+        mark_segments_down_for_unreachable_hosts,
+    )
+    from .gppylib.operations.startSegments import (
+        START_AS_MIRRORLESS,
+        START_AS_PRIMARY_OR_MIRROR,
+        StartSegmentsOperation,
+    )
+    from .gppylib.utils import TableLogger
 except ImportError as e:
-    sys.exit('Cannot import modules.  Please check that you have sourced greenplum_path.sh.  Detail: ' + str(e))
+    sys.exit(
+        "Cannot import modules.  Please check that you have sourced greenplum_path.sh.  Detail: "
+        + str(e)
+    )
 
 logger = get_default_logger()
 
