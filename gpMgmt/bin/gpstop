@@ -13,9 +13,10 @@ import socket
 import subprocess
 import sys
 import time
+from collections import defaultdict
 from collections.abc import Iterable
 from optparse import OptionGroup
-from typing import Literal
+from typing import Literal, Self
 
 try:
     from .gppylib import pgconf, userinput
@@ -256,9 +257,16 @@ class GpStop:
         assert self.__etcd_hosts is not None, "Must call _prepare() first"
         return self.__etcd_hosts
 
+    @property
+    def pool(self) -> base.WorkerPool:
+        assert self.__pool is not None, "Pool is not initialized yet"
+        return self.__pool
+
     #####
-    def _find_any_primary_and_mirror_on_same_host(self, segs):
-        map_content_id_to_segment = {}
+    def _find_any_primary_and_mirror_on_same_host(
+        self, segs: Iterable[Segment]
+    ) -> tuple[Segment, Segment] | tuple[None, None]:
+        map_content_id_to_segment: dict[int, Segment] = {}
         for seg in segs:
             seg_content_id = seg.getSegmentContentId()
             if seg_content_id in map_content_id_to_segment:
@@ -271,16 +279,19 @@ class GpStop:
 
         return None, None
 
-    def _filter_segments_for_single_host_stop(self):
-        host_to_segments_mapping = self.gparray.getSegmentsByHostName(
-            self.gparray.getSegDbList()
+    def _filter_segments_for_single_host_stop(self) -> list[Segment]:
+        host_to_segments_mapping: dict[str, list[Segment]] = (
+            self.gparray.getSegmentsByHostName(self.gparray.getSegDbList())
         )
+
+        assert self.onlyThisHost is not None, "onlyThisHost must be set"
+
         segments_on_host = host_to_segments_mapping[self.onlyThisHost]
         up_segments_on_host = [seg for seg in segments_on_host if seg.isSegmentUp()]
         matching_primary, matching_mirror = (
             self._find_any_primary_and_mirror_on_same_host(up_segments_on_host)
         )
-        if matching_primary or matching_mirror:
+        if matching_primary is not None and matching_mirror is not None:
             raise Exception(
                 f"Segment host '{matching_primary.getSegmentHostName()}' has both of corresponding primary "
                 f"'{matching_primary}' and mirror '{matching_mirror}'. Aborting."
@@ -293,7 +304,7 @@ class GpStop:
 
         return up_segments_on_host
 
-    def run(self):
+    def run(self) -> Literal[0, 1, 2]:
         """
         Run and return the exitCode for the program
         """
@@ -305,11 +316,10 @@ class GpStop:
         if self.coordinatoronly:
             if self.sighup:
                 return self._sighup_cluster()
-            if self.interactive:
-                if not userinput.ask_yesno(
-                    None, "\nContinue with coordinator-only shutdown", "N"
-                ):
-                    raise UserAbortedException()
+            if self.interactive and not userinput.ask_yesno(
+                None, "\nContinue with coordinator-only shutdown", "N"
+            ):
+                raise UserAbortedException()
             try:
                 # Disable Ctrl-C
                 signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -374,7 +384,7 @@ class GpStop:
                 try:
                     # currently responsible for triggering an update to gp_segment_configuration
                     # because dbconn.connect() internally calls commit()
-                    self.conn = dbconn.connect(self.dburl)
+                    self.__conn = dbconn.connect(self.dburl)
 
                     # backup in case connect() does not do a commit
                     ReconfigDetectionSQLQueryCommand(self.conn).run()
@@ -409,7 +419,7 @@ class GpStop:
                 return 2
         return 0
 
-    def _clean_fts(self):
+    def _clean_fts(self) -> None:
         if not os.path.exists(self.fts_hosts):
             raise gp.GpError(f"FTS host file {self.fts_hosts} does not exist.")
         fts_host_machine_list = read_hosts(self.fts_hosts)
@@ -422,7 +432,7 @@ class GpStop:
                 raise gp.GpError(f"FTS process on {fts} is still alive")
         logger.info("kill all FTS processes successfully.")
 
-    def _clean_etcd(self):
+    def _clean_etcd(self) -> None:
         if not os.path.exists(self.etcd_hosts):
             raise gp.GpError(f"ETCD host file {self.etcd_hosts} does not exist.")
         etcd_host_machine_list = read_hosts(self.etcd_hosts)
@@ -437,17 +447,17 @@ class GpStop:
         logger.info("kill all ETCD processes successfully.")
 
     ######
-    def cleanup(self):
-        if self.pool:
-            self.pool.haltWork()
+    def cleanup(self) -> None:
+        if self.__pool:
+            self.__pool.haltWork()
 
             ######
 
-    def _prepare(self):
+    def _prepare(self) -> None:
         logger.info("Gathering information and validating the environment...")
-        self.gphome = gp.get_gphome()
-        if self.coordinator_datadir is None:
-            self.coordinator_datadir = gp.get_coordinatordatadir()
+        self.__gphome = gp.get_gphome()
+        if self.__coordinator_datadir is None:
+            self.__coordinator_datadir = gp.get_coordinatordatadir()
         self.user = unix.getUserName()
         gp.check_permissions(self.user)
         self._read_postgresqlconf()
@@ -458,7 +468,7 @@ class GpStop:
         self._check_version()
 
     ######
-    def _is_hostname_valid(self):
+    def _is_hostname_valid(self) -> None:
         segments = self.gparray.getSegmentsByHostName(self.gparray.getDbList())
         host_names = list(segments.keys())
         if self.onlyThisHost not in host_names:
@@ -469,22 +479,22 @@ class GpStop:
             raise SystemExit(1)
 
     ######
-    def _check_version(self):
-        self.gpversion = gp.GpVersion.local(
+    def _check_version(self) -> None:
+        self.__gpversion = gp.GpVersion.local(
             "local CloudberryDB version check", self.gphome
         )
         logger.info(f"CloudberryDB Version: '{self.gpversion}'")
 
     ######
-    def _read_postgresqlconf(self):
+    def _read_postgresqlconf(self) -> None:
         logger.debug("Obtaining coordinator's port from coordinator data directory")
         pgconf_dict = pgconf.readfile(self.coordinator_datadir + "/postgresql.conf")
-        self.port = pgconf_dict.int("port")
+        self.__port = pgconf_dict.int("port")
         logger.debug(f"Read from postgresql.conf port={self.port}")
 
         ######
 
-    def _check_db_running(self):
+    def _check_db_running(self) -> None:
         if os.path.exists(self.coordinator_datadir + "/postmaster.pid"):
             self.pid = gp.read_postmaster_pidfile(self.coordinator_datadir)
             if not unix.check_pid(self.pid):
@@ -510,28 +520,30 @@ class GpStop:
             )
 
     ######
-    def _build_gparray(self):
+    def _build_gparray(self) -> None:
         logger.info("Obtaining CloudberryDB Coordinator catalog information")
 
         logger.info("Obtaining Segment details from coordinator...")
-        self.dburl = dbconn.DbURL(port=self.port, dbname="template1")
-        self.gparray = GpArray.initFromCatalog(self.dburl, utility=True)
+        self.__dburl = dbconn.DbURL(port=self.port, dbname="template1")
+        self.__gparray = GpArray.initFromCatalog(self.dburl, utility=True)
 
     class _SigIntHandler:
-        def __init__(self):
+        __slots__ = ["_prev_handler", "interrupted"]
+
+        def __init__(self) -> None:
             self.interrupted = False
 
-        def _handler(self, signum, stack_frame):
+        def _handler(self, signum, stack_frame) -> None:
             self.interrupted = True
 
-        def enable(self):
+        def enable(self) -> None:
             self.interrupted = False
             signal.signal(signal.SIGINT, self._handler)
 
-        def disable(self):
+        def disable(self) -> None:
             signal.signal(signal.SIGINT, signal.SIG_IGN)
 
-        def __enter__(self):
+        def __enter__(self) -> Self:
             self._prev_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
 
             # Try to prevent easy mistakes by ensuring that SIGINT was
@@ -543,13 +555,13 @@ class GpStop:
                 )
             return self
 
-        def __exit__(self, exc_type, exc_value, traceback):
+        def __exit__(self, exc_type, exc_value, traceback) -> Literal[False]:
             # Put back the previous handler.
             signal.signal(signal.SIGINT, self._prev_handler)
             return False
 
-    def _is_coordinator_stopped(self):
-        with open(os.devnull, "w") as devnull:
+    def _is_coordinator_stopped(self) -> bool:
+        with open(os.devnull, "w", encoding="utf-8") as devnull:
             ret = subprocess.call(
                 ["pg_ctl", "status", "-D", self.coordinator_datadir], stdout=devnull
             )
@@ -567,8 +579,8 @@ class GpStop:
             "Stopping coordinator segment and waiting for user connections to finish ..."
         )
 
-        self.conn = dbconn.connect(self.dburl, utility=True)
-        user_connections_header, user_connections = catalog.getUserConnectionInfo(
+        self.__conn = dbconn.connect(self.dburl, utility=True)
+        _user_connections_header, user_connections = catalog.getUserConnectionInfo(
             self.conn
         )
         self.conn.close()
@@ -592,7 +604,7 @@ class GpStop:
                 # time.sleep() can be safely interrupted (https://docs.python.org/2/library/time.html#time.sleep)
                 handler.enable()
                 time.sleep(PG_CTL_STATUS_SLEEP_INTERVAL)
-                time_waited = time_waited + PG_CTL_STATUS_SLEEP_INTERVAL
+                time_waited += PG_CTL_STATUS_SLEEP_INTERVAL
                 handler.disable()
 
                 if handler.interrupted or (
@@ -632,7 +644,7 @@ class GpStop:
 
     ######
     # NOTE: we must make sure the coordinator is down before leaving this routine
-    def _stop_coordinator(self, coordinatorOnly=False):
+    def _stop_coordinator(self, *, coordinatorOnly: bool = False):
         """shutsdown the coordinator"""
 
         logger.info(f"Commencing Coordinator instance shutdown with mode='{self.mode}'")
@@ -656,30 +668,33 @@ class GpStop:
                     timeout=self.timeout,
                 )
                 cmd.run(validateAfter=True)
-        except:
+        except Exception:
             # Didn't stop in timeout or pg_ctl failed.  So try kill
             (succeeded, mypid, file_datadir) = pg.ReadPostmasterTempFile.local(
                 "Read coordinator tmp file", self.dburl.pgport
             ).getResults()
-            if succeeded and file_datadir == self.coordinator_datadir:
+            if (
+                succeeded
+                and file_datadir == self.coordinator_datadir
+                and unix.check_pid(mypid)
+            ):
+                logger.info("Failed to shutdown coordinator with pg_ctl.")
+                logger.info("Sending SIGQUIT signal...")
+                os.kill(mypid, signal.SIGQUIT)
+                time.sleep(5)
+
+                # Still not gone... try SIGABRT
                 if unix.check_pid(mypid):
-                    logger.info("Failed to shutdown coordinator with pg_ctl.")
-                    logger.info("Sending SIGQUIT signal...")
-                    os.kill(mypid, signal.SIGQUIT)
+                    logger.info("Sending SIGABRT signal...")
+                    os.kill(mypid, signal.SIGABRT)
                     time.sleep(5)
 
-                    # Still not gone... try SIGABRT
-                    if unix.check_pid(mypid):
-                        logger.info("Sending SIGABRT signal...")
-                        os.kill(mypid, signal.SIGABRT)
-                        time.sleep(5)
-
-                    if not unix.check_pid(mypid):
-                        # Clean up files
-                        lockfile = f"/tmp/.s.PGSQL.{self.dburl.pgport}"
-                        if os.path.exists(lockfile):
-                            logger.info("Clearing segment instance lock files")
-                            os.remove(lockfile)
+                if not unix.check_pid(mypid):
+                    # Clean up files
+                    lockfile = f"/tmp/.s.PGSQL.{self.dburl.pgport}"
+                    if os.path.exists(lockfile):
+                        logger.info("Clearing segment instance lock files")
+                        os.remove(lockfile)
         logger.info(
             "Attempting forceful termination of any leftover coordinator process"
         )
@@ -693,7 +708,7 @@ class GpStop:
         logger.debug("Successfully shutdown the Coordinator instance in admin mode")
 
     ######
-    def _stop_standby(self):
+    def _stop_standby(self) -> bool:  # noqa: PLR0911
         """assumes prepare() has been called"""
         if not self.stopstandby:
             return True
@@ -764,9 +779,11 @@ class GpStop:
                     logger.error(
                         "Failed to stop standby. Attempting forceful termination of standby process"
                     )
-                    (succeeded, mypid, file_datadir) = pg.ReadPostmasterTempFile.remote(
-                        "Read standby tmp file", self.dburl.pgport, standby.hostname
-                    ).getResults()
+                    (_succeeded, mypid, _file_datadir) = (
+                        pg.ReadPostmasterTempFile.remote(
+                            "Read standby tmp file", self.dburl.pgport, standby.hostname
+                        ).getResults()
+                    )
                     unix.kill_9_segment_processes(
                         self.coordinator_datadir, self.dburl.pgport, mypid
                     )
@@ -792,7 +809,7 @@ class GpStop:
     def _stop_segments(self, segs):
         failed_seg_status = []
         workers = min(len(self.gparray.get_hostlist()), self.parallel)
-        self.pool = base.WorkerPool(numWorkers=workers, logger=logger)
+        self.__pool = base.WorkerPool(numWorkers=workers, logger=logger)
 
         logger.info(
             "Targeting dbid %s for shutdown" % [seg.getSegmentDbId() for seg in segs]
@@ -804,7 +821,7 @@ class GpStop:
                 "Commencing parallel primary segment instance shutdown, please wait..."
             )
             try:
-                self._stopseg_cmds(True, False, segs=segs)
+                self._stopseg_cmds(segs, includePrimaries=True, includeMirrors=False)
             finally:
                 self.pool.join()
             primary_success_seg_status = self._process_segment_stop(failed_seg_status)
@@ -814,7 +831,7 @@ class GpStop:
                 "Commencing parallel mirror segment instance shutdown, please wait..."
             )
             try:
-                self._stopseg_cmds(False, True, segs=segs)
+                self._stopseg_cmds(segs, includePrimaries=False, includeMirrors=True)
             finally:
                 self.pool.join()
             mirror_success_seg_status = self._process_segment_stop(failed_seg_status)
@@ -826,7 +843,7 @@ class GpStop:
             logger.info("Commencing parallel segment instance shutdown, please wait...")
             # There are no active-mirrors
             try:
-                self._stopseg_cmds(True, False, segs=segs)
+                self._stopseg_cmds(segs, includePrimaries=True, includeMirrors=False)
             finally:
                 self.pool.join()
             success_seg_status = self._process_segment_stop(failed_seg_status)
@@ -835,13 +852,12 @@ class GpStop:
         pass
 
     ######
-    def _stopseg_cmds(self, includePrimaries, includeMirrors, segs):
-        host_segs_map = {}
+    def _stopseg_cmds(
+        self, segs: Iterable[Segment], *, includePrimaries: bool, includeMirrors: bool
+    ):
+        host_segs_map: defaultdict[str, list[Segment]] = defaultdict(list)
         for seg in segs:
-            if seg.getSegmentHostName() in list(host_segs_map.keys()):
-                host_segs_map[seg.getSegmentHostName()].append(seg)
-            else:
-                host_segs_map[seg.getSegmentHostName()] = [seg]
+            host_segs_map[seg.getSegmentHostName()].append(seg)
 
         for hostname, gpdb_objs in host_segs_map.items():
             dbs = []
@@ -883,21 +899,18 @@ class GpStop:
     def _process_segment_stop(self, failed_seg_status):
         """reviews results of gpsegstop commands"""
         success_seg_status = []
-        seg_timed_out = False
+        _seg_timed_out = False
         cmds = self.pool.getCompletedItems()
 
-        for cmd in cmds:
-            if cmd.get_results().rc == 0 or cmd.get_results().rc == 1:
-                cmdout = cmd.get_results().stdout
+        for cmd in cmds:  # noqa: PLR1702
+            if cmd.get_results().rc in {0, 1}:
+                cmdout: str = cmd.get_results().stdout
                 lines = cmdout.split("\n")
                 for line in lines:
                     if line.startswith("STATUS"):
                         reasonStr, started, dir = parseStatusLine(line, isStop=True)[1:]
 
-                        if started.lower() == "false":
-                            success = False
-                        else:
-                            success = True
+                        success = started.lower() != "false"
 
                         for db in cmd.dblist:
                             if db.datadir == dir:
@@ -1025,7 +1038,7 @@ class GpStop:
         pass
 
     ######
-    def _sighup_cluster(self):
+    def _sighup_cluster(self) -> Literal[0, 1]:
         """assumes prepare() has been called"""
         workers = min(len(self.gparray.get_hostlist()), self.parallel)
 
@@ -1047,15 +1060,15 @@ class GpStop:
                         continue
                     self.failed.append(item.db)
 
-        self.pool = SighupWorkerPool(numWorkers=workers)
+        self.__pool = SighupWorkerPool(numWorkers=workers)
         dbList = self.gparray.getDbList()
         hostname = socket.gethostname()
         logger.info("Signalling all postmaster processes to reload")
         for db in dbList:
-            ctxt = REMOTE
+            ctxt = base.REMOTE
             remote_host = db.getSegmentHostName()
             if db.getSegmentHostName() == hostname:
-                ctxt = LOCAL
+                ctxt = base.LOCAL
                 remote_host = None
             cmd = pg.ReloadDbConf(
                 name="reload segment number " + str(db.getSegmentDbId()),
@@ -1063,17 +1076,17 @@ class GpStop:
                 ctxt=ctxt,
                 remoteHost=remote_host,
             )
-            self.pool.addCommand(cmd)
+            self.__pool.addCommand(cmd)
 
         if self.quiet:
-            self.pool.join()
+            self.__pool.join()
         else:
-            base.join_and_indicate_progress(self.pool)
+            base.join_and_indicate_progress(self.__pool)
 
-        self.pool.check_results()
-        self.pool.empty_completed_items()
+        self.__pool.check_results()
+        self.__pool.empty_completed_items()
 
-        if len(self.pool.failed) < 1:
+        if len(self.__pool.failed) < 1:
             return 0
 
         logger.info("--------------------------------------------")
@@ -1081,7 +1094,7 @@ class GpStop:
         logger.info("--------------------------------------------")
         tabLog = TableLogger().setWarnWithArrows(True)
         tabLog.info(["Host", "Datadir", "Port", "Status"])
-        for db in self.pool.failed:
+        for db in self.__pool.failed:
             tup = [
                 db.getSegmentHostName(),
                 db.getSegmentDataDirectory(),
@@ -1279,11 +1292,10 @@ class GpStop:
 
         if external_fts and (options.fts_hosts or options.etcd_hosts):
             ProgramArgumentValidationException("internal fts not suopport -F and -E")
-        if options.mode != "smart":
-            if options.fast or options.immediate:
-                raise ProgramArgumentValidationException(
-                    "Can not mix --mode options with older deprecated '-f,-i,-s'"
-                )
+        if options.mode != "smart" and (options.fast or options.immediate):
+            raise ProgramArgumentValidationException(
+                "Can not mix --mode options with older deprecated '-f,-i,-s'"
+            )
 
         if options.coordinator_only and options.only_this_host:
             raise ProgramArgumentValidationException(
@@ -1340,13 +1352,12 @@ class GpStop:
                 f"Invalid timeout value.  Must be greater than {SEGMENT_STOP_TIMEOUT_DEFAULT} seconds."
             )
 
-        if is_external_fts:
-            if options.fts_hosts is None:
-                coordinator_data_directory = os.getenv("COORDINATOR_DATA_DIRECTORY")
-                if coordinator_data_directory is None:
-                    coordinator_data_directory = options.coordinatorDataDirectory
+        if is_external_fts() and options.fts_hosts is None:
+            coordinator_data_directory = os.getenv("COORDINATOR_DATA_DIRECTORY")
+            if coordinator_data_directory is None:
+                coordinator_data_directory = options.coordinatorDataDirectory
 
-                options.fts_hosts = coordinator_data_directory + "/config" + "/fts_host"
+            options.fts_hosts = coordinator_data_directory + "/config" + "/fts_host"
 
         if args:
             raise ProgramArgumentValidationException(
